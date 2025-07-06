@@ -11,9 +11,9 @@ SSH_KEY_PATH="~/Carbon-Aware-AutoScaler/DeepScaler/train.pem"
 # Define your models, IDs, and numeric restrictions
 #MODEL_NAMES=("AdapGLD" "AdapGLD" "AdapGLD" "AdapGLD" "AdapGLA" "AdapGLA" "AdapGLA" "AdapGLA")
 #MODEL_IDS=("AdapGLD_fresh" "AdapGLD_fresh" "AdapGLD_fresh" "AdapGLD_fresh" "AdapGLA_fresh" "AdapGLA_fresh" "AdapGLA_fresh" "AdapGLA_fresh")
-MODEL_NAMES=("AdapGLA")
-MODEL_IDS=("AdapGLA_long")
-MODEL_RESTRICTIONS=(0.35)  # Numeric restrictions
+MODEL_NAMES=("HPA")
+MODEL_IDS=("Hpa")
+MODEL_RESTRICTIONS=(0.35 0.4 0.5 0.8)  # Numeric restrictions
 
 START_ROUND=0
 MAX_ROUND=10  # Set the last round number here
@@ -28,9 +28,6 @@ do
 
   for (( ROUND=$START_ROUND; ROUND<=MAX_ROUND; ROUND++ ))
   do
-    echo "Starting round $ROUND for model $MODEL_NAME ($MODEL_ID) with restriction $MODEL_RESTRICTION..."
-    MODEL_FILE="$REMOTE_PATH_STGCN/model/${MODEL_ID}/${MODEL_ID}/${MODEL_ID}.pkl"
-
     # --- Step 1: Local - Start Minikube and deploy Istio ---
     echo "[Local] Starting Minikube..."
     minikube start --cpus 15 --memory 50000
@@ -51,27 +48,7 @@ do
 
     echo "[Local] Deploying Istio..."
     bash deploy_istio.sh
-
-    # --- Step 2: STGCN - Set up port forwarding, run training and background prediction ---
-    echo "[Remote: STGCN] Starting model training and prediction..."
-
-    ssh -i train.pem ubuntu@$STGCN_IP << EOF
-      cd $REMOTE_PATH_STGCN
-
-      echo "[STGCN] Setting up port forwarding via jump host..."
-      ssh -f -N -L 8443:192.168.49.2:8443 ubuntu@$JUMP_HOST_IP -i $SSH_KEY_PATH
-      ssh -f -N -L 9090:localhost:9090 ubuntu@$JUMP_HOST_IP -i $SSH_KEY_PATH
-      ssh -f -N -L 9091:localhost:9091 ubuntu@$JUMP_HOST_IP -i $SSH_KEY_PATH
-
-      echo "[STGCN] Activating Python environment..."
-      source ~/Carbon-Aware-AutoScaler/.myenv/bin/activate
-
-      echo "[STGCN] Running training script..."
-      # python3 main.py --model_name=$MODEL_NAME --model_save_path=$MODEL_FILE
-
-      echo "[STGCN] Starting prediction in background with restriction $MODEL_RESTRICTION..."
-      nohup python3 predict_scale.py --model_name=$MODEL_NAME --model_save_path=$MODEL_FILE --round=$ROUND --restriction=$MODEL_RESTRICTION > predict_T.log 2>&1 &
-EOF
+    bash hpa_all.sh
 
     # --- Step 3: Locust - Start load test ---
     echo "[Remote: Locust] Running load test..."
@@ -81,23 +58,12 @@ EOF
       echo "[Locust] Activating Python environment..."
       source .venv/bin/activate
 
-      # Use MODEL_NAME/MODEL_NAME_RESTRICTION_ROUND as the path
-      bash load_test.sh ${MODEL_ID}/${MODEL_ID}_${MODEL_RESTRICTION}_${ROUND}
-EOF
-
-    # --- Step 4: STGCN - Kill background prediction ---
-    echo "[Remote: STGCN] Killing prediction process..."
-    ssh -i train.pem ubuntu@$STGCN_IP << EOF
-      pkill -f "predict_scale.py"
-      echo "[STGCN] Prediction process terminated."
+      bash load_test.sh hpa/hpa_${ROUND}
 EOF
 
     # --- Step 5: Local - Cleanup Minikube ---
     echo "[Local] Deleting Minikube cluster..."
     minikube delete
-
-    echo "Round $ROUND completed for model $MODEL_NAME ($MODEL_ID) with restriction $MODEL_RESTRICTION."
-    echo ""
   done
 done
 
